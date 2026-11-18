@@ -1,0 +1,7 @@
+.godot/
+export/
+*.m4a
+songs/*.txt
+tools/display.txt
+publish_log.txt
+godot_path.txt

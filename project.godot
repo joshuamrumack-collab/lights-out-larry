@@ -1,0 +1,34 @@
+; Engine configuration file.
+config_version=5
+
+[application]
+
+config/name="Lights Out, Larry!"
+config/description="A one-button rhythm game for Suno songs."
+config/icon="res://art/logo/logo_256.png"
+run/main_scene="res://scenes/main_menu.tscn"
+config/features=PackedStringArray("4.7", "GL Compatibility")
+
+[autoload]
+
+Settings="*res://scripts/autoload/settings.gd"
+Library="*res://scripts/autoload/library.gd"
+Progress="*res://scripts/autoload/progress.gd"
+Leaderboard="*res://scripts/autoload/leaderboard.gd"
+
+[display]
+
+window/size/viewport_width=1280
+window/size/viewport_height=720
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+environment/defaults/default_clear_color=Color(0.05, 0.04, 0.09, 1)
+
+[audio]
+
+general/default_playback_type.web=0
