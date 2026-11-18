@@ -199,7 +199,7 @@ func _build_timing(root: VBoxContainer) -> void:
 
 	var row3 := UI.hbox(16)
 	step_timing.add_child(row3)
-	preview_btn = UI.button("▶  Preview with clicks", _toggle_preview)
+	preview_btn = UI.button("Preview with clicks", _toggle_preview)
 	row3.add_child(preview_btn)
 	beat_flash = Control.new()
 	beat_flash.custom_minimum_size = Vector2(44, 44)
@@ -413,7 +413,7 @@ func _on_analyzed(result: Dictionary) -> void:
 
 func _toggle_preview() -> void:
 	previewing = not previewing
-	preview_btn.text = "■  Stop preview" if previewing else "▶  Preview with clicks"
+	preview_btn.text = "Stop preview" if previewing else "Preview with clicks"
 	if previewing:
 		player.stream = stream
 		player.play(maxf(0.0, float(analysis.get("start", 0.0)) - 0.5))

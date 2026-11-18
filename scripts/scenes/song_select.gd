@@ -108,7 +108,7 @@ func _ready() -> void:
 
 	var ph := UI.hbox(12)
 	detail.add_child(ph)
-	play_btn = UI.button("▶  Play", _play, 260)
+	play_btn = UI.button("Play", _play, 260)
 	play_btn.add_theme_font_size_override("font_size", 30)
 	ph.add_child(play_btn)
 	ph.add_child(UI.button("Practice", _practice))
@@ -164,7 +164,7 @@ func _populate() -> void:
 	var sel := 0
 	for i in Library.songs.size():
 		var s: Dictionary = Library.songs[i]
-		list.add_item("%s\n%s" % [s.get("title", "?"), s.get("artist", "")])
+		list.add_item(str(s.get("title", "?")))
 		if s.id == Library.selected_id:
 			sel = i
 	var has := Library.songs.size() > 0

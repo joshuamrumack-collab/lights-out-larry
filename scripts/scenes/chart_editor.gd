@@ -88,7 +88,7 @@ func _build_ui() -> void:
 	var sp := Control.new()
 	sp.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	top.add_child(sp)
-	play_btn = UI.button("▶ Play", _toggle_play, 110)
+	play_btn = UI.button("Play", _toggle_play, 110)
 	top.add_child(play_btn)
 	snap_opt = OptionButton.new()
 	for s in ["Snap: 1 beat", "Snap: 1/2", "Snap: 1/4", "Snap: off"]:
@@ -338,7 +338,7 @@ func _seek(t: float) -> void:
 
 func _toggle_play() -> void:
 	playing = not playing
-	play_btn.text = "❚❚ Pause" if playing else "▶ Play"
+	play_btn.text = "Pause" if playing else "Play"
 	if playing:
 		player.play(cur)
 		last_play_t = cur
