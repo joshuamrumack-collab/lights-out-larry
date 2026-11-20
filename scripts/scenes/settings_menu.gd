@@ -34,6 +34,7 @@ func _ready() -> void:
 	_slider(left, "Note speed", Settings.scroll_speed, 0.5, 2.0, 0.05, func(x): Settings.scroll_speed = x, "%.2fx", 1.0)
 	_slider(left, "Timing offset", Settings.offset_ms, -200.0, 200.0, 1.0, func(x): Settings.offset_ms = x, "%+d ms", 1.0)
 	_check(left, "No Fail (can't run out of health)", Settings.no_fail, func(b): Settings.no_fail = b)
+	_check(left, "Two light switches on Hard, Expert & Chaos\n(W / Up / left click = top,  S / Down / right click = bottom)", Settings.dual_switch, func(b): Settings.dual_switch = b)
 	_check(left, "Screen shake & flashes", Settings.effects, func(b): Settings.effects = b)
 	_check(left, "Background: little brother & the light switch", Settings.background == "room", func(b): Settings.background = "room" if b else "plain")
 	var rh := UI.hbox()
@@ -67,20 +68,27 @@ func _ready() -> void:
 	_text(left, "Class code", Settings.class_code, "optional", func(t): Settings.class_code = t)
 
 	_header(right, "Assist")
-	right.add_child(UI.label("Makes the game easier to play. Scores are marked as assist.", 16, UI.MUTED))
+	_note(right, "Makes the game easier to play. Scores are marked as assist.")
 	_check(right, "Wider timing windows", Settings.assist_timing, func(b): Settings.assist_timing = b)
 	_check(right, "Hold notes only need a press", Settings.holds_as_taps, func(b): Settings.holds_as_taps = b)
 	_check(right, "Bigger notes", Settings.big_notes, func(b): Settings.big_notes = b)
-	_check(right, "Any key or button counts (switches, big buttons)", Settings.any_key, func(b): Settings.any_key = b)
+	_check(right, "Any key or button counts\n(switches, big buttons)", Settings.any_key, func(b): Settings.any_key = b)
 
 	_header(right, "Eye tracker mode")
-	right.add_child(UI.label("Fewer notes, and each note waits at the ring so there's time to hit it.\nWorks with eye trackers that move the mouse pointer (or click with dwell/blink).", 16, UI.MUTED))
+	_note(right, "Fewer notes, and each note waits at the ring so there's time to hit it. Works with eye trackers that move the mouse pointer (or click with dwell/blink).")
 	_check(right, "Eye tracker mode", Settings.eye_mode, func(b): Settings.eye_mode = b)
 	_slider(right, "Note waits at ring", Settings.eye_wait, 0.5, 5.0, 0.25, func(x): Settings.eye_wait = x, "%.2f s", 1.0)
 	_slider(right, "Time between notes", Settings.eye_gap, 1.5, 6.0, 0.25, func(x): Settings.eye_gap = x, "%.2f s", 1.0)
 	_check(right, "Look at the ring to hit (no click needed)", Settings.eye_hover, func(b): Settings.eye_hover = b)
 	_slider(right, "Look time to hit", Settings.eye_dwell, 0.1, 1.5, 0.05, func(x): Settings.eye_dwell = x, "%.2f s", 1.0)
 	back.grab_focus()
+
+
+func _note(v: VBoxContainer, text: String) -> void:
+	var l := UI.label(text, 16, UI.MUTED)
+	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	l.custom_minimum_size.x = 200
+	v.add_child(l)
 
 
 func _header(v: VBoxContainer, text: String) -> void:

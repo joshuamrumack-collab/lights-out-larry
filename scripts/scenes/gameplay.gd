@@ -57,6 +57,20 @@ var rp_i := 0
 var rp_held := false
 
 var notes := PackedFloat64Array()
+var lanes := PackedInt32Array()   # two-switch mode: 0 = top (up), 1 = bottom (down)
+var dual := false
+var hold_lane := 0
+var touch_lane := {}               # touch index -> lane
+var touches_l := [0, 0]
+var last_held_l := [false, false]
+var rp_held_l := [false, false]
+var rec_press_lanes := PackedInt32Array()
+var rec_release_lanes := PackedInt32Array()
+var larry_start := -100.0          # "Larry interrupts" (Chaos): he blocks the view, play by ear
+var larry_end := -100.0
+var larry_tex: Texture2D
+var larry_line := ""
+const LARRY_LINES := ["Hehe! Can't see?", "Guess where the notes are!", "Bet you can't play blind!", "Peekaboo!", "Use your ears, nerd!"]
 var durs := PackedFloat64Array()
 var states := PackedInt32Array()
 var next_idx := 0
@@ -126,6 +140,7 @@ var judge_sub := ""
 var judge_color := Color.WHITE
 var judge_at := -10.0
 var tap_at := -10.0
+var tap_lane := 0
 var stars: Array = []
 var last_beat := -99999
 
@@ -170,6 +185,7 @@ func _ready() -> void:
 	tutorial = Library.is_tutorial
 	watching = not Library.replay.is_empty() and not record
 	eye = Settings.eye_mode and not record
+	dual = Settings.dual_for(diff) and not record and not tutorial
 	holds_taps = Settings.holds_as_taps
 	wide_windows = Settings.assist_timing
 	if watching:
@@ -178,12 +194,15 @@ func _ready() -> void:
 		holds_taps = bool(Library.replay.get("holds_as_taps", false))
 		wide_windows = bool(Library.replay.get("assist_timing", false))
 		mod = str(Library.replay.get("mod", ""))
+		dual = bool(Library.replay.get("dual", false))
 		var presses: Array = Library.replay.get("presses", [])
 		var releases: Array = Library.replay.get("releases", [])
-		for t in presses:
-			rp_events.append([float(t), 1])
-		for t in releases:
-			rp_events.append([float(t), 0])
+		var pl: Array = Library.replay.get("press_lanes", [])
+		var rl: Array = Library.replay.get("release_lanes", [])
+		for k in presses.size():
+			rp_events.append([float(presses[k]), 1, int(pl[k]) if k < pl.size() else -1])
+		for k in releases.size():
+			rp_events.append([float(releases[k]), 0, int(rl[k]) if k < rl.size() else -1])
 		rp_events.sort_custom(func(a, b): return a[0] < b[0] or (a[0] == b[0] and a[1] < b[1]))
 	var stream := Library.load_stream(song)
 	if stream == null:
@@ -200,7 +219,13 @@ func _ready() -> void:
 		var chart := Library.get_chart(song, diff, length)
 		notes = chart.t.duplicate()
 		durs = chart.d.duplicate()
+		lanes = (chart.get("l", PackedInt32Array()) as PackedInt32Array).duplicate()
+		if lanes.size() != notes.size():
+			lanes = ChartGen.assign_lanes(song, notes)
 		events = chart.get("ev", []).duplicate(true)
+		if eye:
+			events = events.filter(func(e): return str(e.type) != "larry")
+	larry_tex = load("res://art/sprites/bro_laugh.png")
 	if eye:
 		_thin_for_eye_tracker()
 	if holds_taps or eye:
@@ -285,12 +310,15 @@ func _count_judgements() -> void:
 func _filter_notes(from_t: float, to_t: float) -> void:
 	var t := PackedFloat64Array()
 	var d := PackedFloat64Array()
+	var l := PackedInt32Array()
 	for i in notes.size():
 		if notes[i] >= from_t and notes[i] < to_t:
 			t.append(notes[i])
 			d.append(minf(durs[i], maxf(0.0, to_t - notes[i] - beat_len)))
+			l.append(lanes[i] if i < lanes.size() else 0)
 	notes = t
 	durs = d
+	lanes = l
 
 
 ## Eye tracker mode: keep notes at least Settings.eye_gap seconds apart, preferring strong beats.
@@ -299,13 +327,16 @@ func _thin_for_eye_tracker() -> void:
 	var d := PackedFloat64Array()
 	var last := -INF
 	var gap := maxf(Settings.eye_gap, Settings.eye_wait + 0.5)
+	var l := PackedInt32Array()
 	for i in notes.size():
 		if notes[i] - last >= gap:
 			t.append(notes[i])
 			d.append(0.0)
+			l.append(lanes[i] if i < lanes.size() else 0)
 			last = notes[i]
 	notes = t
 	durs = d
+	lanes = l
 
 
 # ---------------------------------------------------------------- timing
@@ -370,7 +401,14 @@ func _process(delta: float) -> void:
 		_replay_tick(gt)
 	elif Library.autoplay:
 		while next_idx < notes.size() and states[next_idx] == PENDING and gt >= notes[next_idx]:
-			_on_hit(notes[next_idx])
+			_on_hit(notes[next_idx], lanes[next_idx] if dual else -1)
+	elif dual:
+		for ln in 2:
+			var h := _button_held(ln)
+			if last_held_l[ln] and not h:
+				rec_release_times.append(snappedf(gt, 0.0001))
+				rec_release_lanes.append(ln)
+			last_held_l[ln] = h
 	else:
 		var held := _button_held()
 		if last_held and not held:
@@ -431,7 +469,26 @@ func _input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.device == InputEvent.DEVICE_ID_EMULATION:
 		return   # the mouse click a browser/phone fakes from a touch; the touch itself is handled below
 	var pressed := false
-	if event is InputEventScreenTouch:
+	var lane := -1
+	if dual:
+		# two light switches: top / bottom (touch: top or bottom half of the screen)
+		if event is InputEventScreenTouch:
+			if event.pressed:
+				lane = 0 if event.position.y < _target_pos(size).y else 1
+				touch_lane[event.index] = lane
+				touches_l[lane] += 1
+				pressed = true
+			elif touch_lane.has(event.index):
+				var ln: int = touch_lane[event.index]
+				touch_lane.erase(event.index)
+				touches_l[ln] = maxi(0, touches_l[ln] - 1)
+		elif event.is_action_pressed("hit_up", false, true) and not event.is_echo():
+			lane = 0
+			pressed = true
+		elif event.is_action_pressed("hit_down", false, true) and not event.is_echo():
+			lane = 1
+			pressed = true
+	elif event is InputEventScreenTouch:
 		if event.pressed:
 			touches_down += 1
 			pressed = true
@@ -450,10 +507,16 @@ func _input(event: InputEvent) -> void:
 		var t := audio_time() - Settings.offset_sec()
 		if not record and not Library.autoplay:
 			rec_press_times.append(snappedf(t, 0.0001))
-		_on_hit(t)
+			if dual:
+				rec_press_lanes.append(lane)
+		_on_hit(t, lane)
 
 
-func _button_held() -> bool:
+func _button_held(lane: int = -1) -> bool:
+	if dual and lane >= 0:
+		if watching:
+			return rp_held_l[lane]
+		return touches_l[lane] > 0 or Input.is_action_pressed("hit_up" if lane == 0 else "hit_down")
 	if watching:
 		return rp_held
 	if touches_down > 0:
@@ -468,8 +531,10 @@ func _pause_rect() -> Rect2:
 	return Rect2(18, size.y - 96, 78, 78)
 
 
-func _on_hit(t: float) -> void:
+func _on_hit(t: float, lane: int = -1) -> void:
 	tap_at = game_time()
+	if dual and lane >= 0:
+		tap_lane = lane
 	if record:
 		if started:
 			rec_press = t
@@ -478,8 +543,16 @@ func _on_hit(t: float) -> void:
 				room.flip()
 		return
 	var i := next_idx
-	while i < notes.size() and states[i] != PENDING:
-		i += 1
+	if dual and lane >= 0:
+		# the first note still waiting on this switch
+		while i < notes.size() and (states[i] != PENDING or lanes[i] != lane):
+			if notes[i] - t > WINDOWS.good * win_scale:
+				i = notes.size()
+				break
+			i += 1
+	else:
+		while i < notes.size() and states[i] != PENDING:
+			i += 1
 	if i >= notes.size():
 		_misclick()
 		return
@@ -504,6 +577,7 @@ func _on_hit(t: float) -> void:
 	if durs[i] > 0.0:
 		states[i] = HOLDING
 		holding_idx = i
+		hold_lane = lanes[i] if dual else 0
 		next_tick = notes[i] + beat_len / 4.0
 	else:
 		states[i] = DONE
@@ -560,7 +634,7 @@ func _hold_tick(gt: float) -> void:
 		_spawn_particles(1, _hold_color(i), 160.0, true)
 	if gt >= end_t:
 		_judge_tail(i, true)
-	elif (watching or not Library.autoplay) and not _button_held():
+	elif (watching or not Library.autoplay) and not _button_held(hold_lane if dual else -1):
 		_judge_tail(i, end_t - gt <= RELEASE_WINDOW * win_scale)
 
 
@@ -576,7 +650,7 @@ func _judge_tail(i: int, ok: bool, silent: bool = false) -> void:
 		score += 300 * multiplier()
 		_play_hit_sound()
 		_spawn_particles(18, _hold_color(i), 420.0)
-		rings.append({"t": rt, "color": _hold_color(i), "big": true})
+		rings.append({"t": rt, "color": _hold_color(i), "big": true, "y": _lane_dy(lanes[i] if dual else 0)})
 		_popup("+%d" % (300 * multiplier()), _hold_color(i))
 		_show_judgement("HOLD!", "", JUDGE_COLORS.perfect)
 	else:
@@ -615,7 +689,7 @@ func _judge(i: int, grade: String, d: float) -> void:
 		_play_hit_sound()
 		var col: Color = JUDGE_COLORS[grade]
 		_spawn_particles(int(PARTICLE_COUNT[grade] * (1.0 + level_k * 0.5)), col, 380.0 if grade == "perfect" else 280.0)
-		rings.append({"t": rt, "color": col, "big": grade == "perfect"})
+		rings.append({"t": rt, "color": col, "big": grade == "perfect", "y": _lane_dy(lanes[i] if dual else 0)})
 		_popup("+%d" % pts, col)
 	var sub := ""
 	if grade == "great" or grade == "good":
@@ -691,11 +765,16 @@ func _replay_tick(gt: float) -> void:
 	while rp_i < rp_events.size() and rp_events[rp_i][0] <= gt:
 		var e: Array = rp_events[rp_i]
 		rp_i += 1
+		var ln: int = e[2] if e.size() > 2 else -1
 		if e[1] == 1:
 			rp_held = true
-			_on_hit(e[0])
+			if ln >= 0:
+				rp_held_l[ln] = true
+			_on_hit(e[0], ln)
 		else:
 			rp_held = false
+			if ln >= 0:
+				rp_held_l[ln] = false
 			_hold_tick(gt)
 
 
@@ -715,6 +794,15 @@ func _apply_events_until(t: float, instant: bool) -> void:
 				if not instant:
 					info_text = str(ev.v)
 					info_at = rt
+			"larry":
+				larry_start = float(ev.t)
+				larry_end = larry_start + float(ev.v) * 4.0 * beat_len
+				larry_line = LARRY_LINES[randi() % LARRY_LINES.size()]
+				if not instant:
+					info_text = "Larry's in the way! Keep the beat by ear"
+					info_at = rt
+					if room:
+						room.taunt()
 		if not instant and str(ev.type) != "text":
 			_kick(4.0, 0.2, th.a)
 	if instant:
@@ -766,12 +854,14 @@ func _finish(failed: bool) -> void:
 		"autoplay": Library.autoplay,
 		"assist": Settings.assist_on(),
 		"eye": eye,
+		"dual": dual,
 		"mod": mod,
 		"daily": Library.is_daily,
 		"tutorial": tutorial,
 		"watching": watching,
 		"replay": {
 			"presses": Array(rec_press_times), "releases": Array(rec_release_times),
+			"dual": dual, "press_lanes": Array(rec_press_lanes), "release_lanes": Array(rec_release_lanes),
 			"eye": eye, "holds_as_taps": holds_taps, "assist_timing": wide_windows, "mod": mod,
 			"notes": notes.size(), "score": score,
 		},
@@ -891,6 +981,48 @@ func _target_pos(sz: Vector2) -> Vector2:
 	return Vector2(sz.x * lerpf(0.2, 0.8, _smooth(side_cur)), sz.y * 0.56)
 
 
+## Two-switch mode: vertical offset of a lane from the middle (0 = top, 1 = bottom).
+func _lane_dy(lane: int) -> float:
+	if not dual:
+		return 0.0
+	return note_r * 1.75 * (-1.0 if lane == 0 else 1.0)
+
+
+## Larry interrupts (Chaos): Larry pops up in front of the lane and covers the notes for a
+## couple of bars. The ring stays, the music keeps going - keep the beat by ear.
+func _draw_larry(sz: Vector2, gt: float, target: Vector2, dir: float) -> void:
+	if gt < larry_start - 0.3 or gt > larry_end + 0.4:
+		return
+	var k_in := clampf((gt - (larry_start - 0.3)) / 0.3, 0.0, 1.0)
+	var k_out := clampf((larry_end + 0.4 - gt) / 0.4, 0.0, 1.0)
+	var k := minf(k_in, k_out)
+	var band := note_r * (4.2 if dual else 2.2)
+	# the "blanket" over the lane, leaving just the ring
+	draw_rect(Rect2(-40, target.y - band, sz.x + 80, band * 2.0), Color(0.05, 0.04, 0.09, 0.96 * k))
+	draw_arc(target + Vector2(0, _lane_dy(0)), note_r * 1.55, 0, TAU, 48, Color(th.ring, 0.55 * k), 3.0, true)
+	if dual:
+		draw_arc(target + Vector2(0, _lane_dy(1)), note_r * 1.55, 0, TAU, 48, Color(th.ring, 0.55 * k), 3.0, true)
+	# a ticking beat dot so the screen isn't completely dead
+	var phase := fposmod((gt - offset) / beat_len, 1.0)
+	draw_circle(target, 6.0 + pow(1.0 - phase, 3.0) * 10.0, Color(1, 1, 1, 0.35 * k))
+	# Larry himself, bouncing in front of the lane
+	if larry_tex:
+		var h := band * 2.9
+		var w := larry_tex.get_width() * h / larry_tex.get_height()
+		var cx := target.x + dir * sz.x * 0.52
+		var bob := absf(sin(rt * 9.0)) * 8.0
+		var y := target.y - h * 0.55 - bob + (1.0 - k) * h
+		draw_texture_rect(larry_tex, Rect2(cx - w * 0.5, y, w, h), false, Color(1, 1, 1, k))
+		# speech bubble
+		var bw := 300.0
+		var bx := cx - dir * (w * 0.5 + bw * 0.5 + 10.0)
+		var by := y + h * 0.18
+		draw_rect(Rect2(bx - bw * 0.5, by - 28.0, bw, 40.0), Color(1, 1, 1, 0.92 * k))
+		var tip := Vector2(bx + dir * bw * 0.5, by - 8.0)
+		draw_colored_polygon(PackedVector2Array([tip, tip + Vector2(dir * 16.0, -6.0), tip + Vector2(0, 10.0)]), Color(1, 1, 1, 0.92 * k))
+		_text_center(larry_line, Vector2(bx, by), 20, Color(0.12, 0.08, 0.15, k))
+
+
 func _smooth(x: float) -> float:
 	return x * x * (3.0 - 2.0 * x)
 
@@ -993,7 +1125,7 @@ func _draw() -> void:
 		if x < -5 or x > sz.x + 5:
 			continue
 		var is_bar := posmod(k, 4) == 0
-		var h := 70.0 if is_bar else 40.0
+		var h := (70.0 if is_bar else 40.0) + (note_r * 1.75 if dual else 0.0)
 		var base_a := (0.16 if is_bar else 0.06) * (1.0 + level_k * 0.8)
 		var lc := Color(1, 1, 1, base_a).lerp(Color(fever_col, 0.3 if is_bar else 0.12), fever_k)
 		draw_line(Vector2(x, lane_y - h), Vector2(x, lane_y + h), lc, 2.0)
@@ -1001,9 +1133,11 @@ func _draw() -> void:
 	# Lane.
 	var lane_h := note_r * 1.3
 	var edge := Color(ring_col, 0.25 + glow * 0.25 + level_k * 0.2).lerp(Color(fever_col, 0.8), fever_k)
-	draw_rect(Rect2(-40, lane_y - lane_h, sz.x + 80, lane_h * 2.0), Color(th.lane, 0.62 if room else 0.9))
-	draw_line(Vector2(-40, lane_y - lane_h), Vector2(sz.x + 40, lane_y - lane_h), edge, 2.0 + fever_k * 2.0 + level_k)
-	draw_line(Vector2(-40, lane_y + lane_h), Vector2(sz.x + 40, lane_y + lane_h), edge, 2.0 + fever_k * 2.0 + level_k)
+	for ln in (2 if dual else 1):
+		var ly := lane_y + _lane_dy(ln)
+		draw_rect(Rect2(-40, ly - lane_h, sz.x + 80, lane_h * 2.0), Color(th.lane, 0.62 if room else 0.9))
+		draw_line(Vector2(-40, ly - lane_h), Vector2(sz.x + 40, ly - lane_h), edge, 2.0 + fever_k * 2.0 + level_k)
+		draw_line(Vector2(-40, ly + lane_h), Vector2(sz.x + 40, ly + lane_h), edge, 2.0 + fever_k * 2.0 + level_k)
 
 	# Hold trails.
 	while draw_idx < notes.size() and notes[draw_idx] + durs[draw_idx] + wait_time < gt - 1.0:
@@ -1030,18 +1164,31 @@ func _draw() -> void:
 		hi = minf(hi, sz.x + 60.0)
 		if hi > lo:
 			var th_h := note_r * 0.58
-			draw_rect(Rect2(lo, lane_y - th_h, hi - lo, th_h * 2.0), Color(col, a))
-			draw_rect(Rect2(lo, lane_y - th_h * 0.33, hi - lo, th_h * 0.66), Color(1, 1, 1, a * 0.5))
-			draw_circle(Vector2(x1, lane_y), th_h, Color(col, a))
-			draw_arc(Vector2(x1, lane_y), th_h + 3.0, 0, TAU, 24, Color(1, 1, 1, a), 3.0, true)
+			var hy := lane_y + _lane_dy(lanes[i] if dual else 0)
+			draw_rect(Rect2(lo, hy - th_h, hi - lo, th_h * 2.0), Color(col, a))
+			draw_rect(Rect2(lo, hy - th_h * 0.33, hi - lo, th_h * 0.66), Color(1, 1, 1, a * 0.5))
+			draw_circle(Vector2(x1, hy), th_h, Color(col, a))
+			draw_arc(Vector2(x1, hy), th_h + 3.0, 0, TAU, 24, Color(1, 1, 1, a), 3.0, true)
 
 	# Target ring.
 	var tap_k := clampf((gt - tap_at) / 0.12, 0.0, 1.0)
 	var base_r := note_r * 1.55
 	var ring_r := base_r + (1.0 - tap_k) * 8.0 + (6.0 if holding_idx >= 0 else 0.0) + pulse * 4.0
 	var rc := ring_col.lerp(fever_col, fever_k)
-	draw_circle(target, ring_r, Color(rc, 0.12 + (1.0 - tap_k) * 0.25 + (0.2 if holding_idx >= 0 else 0.0)))
-	draw_arc(target, ring_r, 0, TAU, 48, Color(rc, 0.9), 4.0 + glow * 2.0 + level_k * 2.0, true)
+	if dual:
+		for ln in 2:
+			var rpos := target + Vector2(0, _lane_dy(ln))
+			var mine := ln == tap_lane
+			var rr := base_r + (((1.0 - tap_k) * 8.0) if mine else 0.0) + (6.0 if holding_idx >= 0 and hold_lane == ln else 0.0) + pulse * 4.0
+			draw_circle(rpos, rr, Color(rc, 0.12 + ((1.0 - tap_k) * 0.25 if mine else 0.0)))
+			draw_arc(rpos, rr, 0, TAU, 48, Color(rc, 0.9), 4.0 + glow * 2.0 + level_k * 2.0, true)
+			# which keys work this switch
+			var lbl := "W  ↑  L-click" if ln == 0 else "S  ↓  R-click"
+			var lx := target_x - (base_r + 70.0) * dir
+			_text_center(lbl, Vector2(lx, rpos.y + 6.0), 15, Color(UI.MUTED, 0.75))
+	else:
+		draw_circle(target, ring_r, Color(rc, 0.12 + (1.0 - tap_k) * 0.25 + (0.2 if holding_idx >= 0 else 0.0)))
+		draw_arc(target, ring_r, 0, TAU, 48, Color(rc, 0.9), 4.0 + glow * 2.0 + level_k * 2.0, true)
 	if fever_k > 0.0:
 		draw_arc(target, ring_r + 10.0 + pulse * 10.0, 0, TAU, 48, Color(fever_col, 0.5 * fever_k), 2.0, true)
 	if eye and Settings.eye_hover:
@@ -1063,7 +1210,7 @@ func _draw() -> void:
 		if wait_time > 0.0 and travel < 0.0 and states[i] == PENDING:
 			travel = 0.0  # eye tracker mode: the note waits at the ring
 			waiting = true
-		var pos := Vector2(target_x + travel * pps * dir, lane_y)
+		var pos := Vector2(target_x + travel * pps * dir, lane_y + _lane_dy(lanes[i] if dual else 0))
 		var col := _note_color(nt)
 		if states[i] == MISSED or states[i] == DROPPED:
 			var fade := clampf(1.0 - (gt - nt - wait_time) / 0.5, 0.0, 1.0)
@@ -1084,6 +1231,9 @@ func _draw() -> void:
 		else:
 			Cosmetics.draw_shape(self, shape, pos, note_r * 0.45, Color(1, 1, 1, 0.85 * appear))
 
+	# Larry interrupts: he jumps in front of the lane, you play by ear.
+	_draw_larry(sz, gt, target, dir)
+
 	# Hit rings.
 	var keep: Array = []
 	for fx in rings:
@@ -1093,7 +1243,7 @@ func _draw() -> void:
 		keep.append(fx)
 		var k := clampf(age / 0.4, 0.0, 1.0)
 		var r := base_r + k * (100.0 if fx.big else 60.0)
-		draw_arc(target, r, 0, TAU, 48, Color(fx.color, 1.0 - k), 7.0 * (1.0 - k) + 1.0, true)
+		draw_arc(target + Vector2(0, float(fx.get("y", 0.0))), r, 0, TAU, 48, Color(fx.color, 1.0 - k), 7.0 * (1.0 - k) + 1.0, true)
 	rings = keep
 
 	# Particles.

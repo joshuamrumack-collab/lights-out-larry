@@ -11,7 +11,7 @@ const TEXT := Color(0.93, 0.92, 1.0)
 const MUTED := Color(0.6, 0.57, 0.75)
 const BAD := Color(1.0, 0.3, 0.35)
 
-const DIFF_NAMES := {"easy": "Easy", "normal": "Normal", "hard": "Hard", "expert": "Expert", "twist": "Twist"}
+const DIFF_NAMES := {"easy": "Easy", "normal": "Normal", "hard": "Hard", "expert": "Expert", "twist": "Chaos"}
 const DIFF_COLORS := {
 	"easy": Color(0.45, 1.0, 0.55),
 	"normal": Color(0.38, 0.85, 1.0),

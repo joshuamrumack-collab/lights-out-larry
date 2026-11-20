@@ -286,6 +286,9 @@ func get_chart(song: Dictionary, diff: String, length: float = -1.0) -> Dictiona
 		if length < 0.0:
 			length = float(song.get("length", 180.0))
 		chart = ChartGen.generate(song, diff, length)
+	var t: PackedFloat64Array = chart.t
+	if not chart.has("l") or (chart.l as PackedInt32Array).size() != t.size():
+		chart["l"] = ChartGen.assign_lanes(song, t)
 	_chart_cache[key] = chart
 	return chart
 

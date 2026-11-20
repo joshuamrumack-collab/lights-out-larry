@@ -1,6 +1,8 @@
 extends Control
 
 var list: ItemList
+var dual_btn: CheckButton
+var hint_label: Label
 var info_title: Label
 var info_meta: Label
 var info_best: Label
@@ -15,7 +17,7 @@ var empty_label: Label
 var detail: VBoxContainer
 var preview: AudioStreamPlayer
 var _preview_id := ""
-var practice_box: HBoxContainer
+var practice_box: HFlowContainer
 var speed_opt: OptionButton
 var start_slider: HSlider
 var start_label: Label
@@ -39,7 +41,7 @@ func _ready() -> void:
 	var root := UI.vbox(18)
 	UI.margin(self, 36).add_child(root)
 
-	var top := UI.hbox(12)
+	var top := UI.hbox(10)
 	root.add_child(top)
 	top.add_child(UI.button("‹ Back", func(): get_tree().change_scene_to_file("res://scenes/main_menu.tscn")))
 	var title := UI.label("Choose a song", 36)
@@ -52,6 +54,9 @@ func _ready() -> void:
 	top.add_child(UI.button("Leaderboard", func(): get_tree().change_scene_to_file("res://scenes/leaderboard_screen.tscn")))
 	if OS.get_name() != "Web":
 		top.add_child(UI.button("Open songs folder", func(): OS.shell_open(ProjectSettings.globalize_path(Library.USER_DIR))))
+	for b in top.get_children():
+		if b is Button:
+			b.add_theme_font_size_override("font_size", 18)
 
 	var body := UI.hbox(24)
 	body.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -62,7 +67,7 @@ func _ready() -> void:
 	list.gui_input.connect(func(e: InputEvent):
 		if e is InputEventScreenDrag:
 			list.get_v_scroll_bar().value -= e.relative.y)
-	list.custom_minimum_size.x = 420
+	list.custom_minimum_size.x = 340
 	list.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	list.add_theme_font_size_override("font_size", 22)
 	list.item_selected.connect(_on_select)
@@ -91,13 +96,15 @@ func _ready() -> void:
 			OS.shell_open(str(s.get("suno_url", ""))))
 	detail.add_child(suno_link)
 
-	var dh := UI.hbox(10)
+	var dh := HFlowContainer.new()
+	dh.add_theme_constant_override("h_separation", 8)
+	dh.add_theme_constant_override("v_separation", 8)
 	detail.add_child(dh)
 	for d in Library.DIFFICULTIES:
 		var b := Button.new()
 		b.toggle_mode = true
-		b.custom_minimum_size.x = 132
-		b.add_theme_font_size_override("font_size", 17)
+		b.custom_minimum_size.x = 112
+		b.add_theme_font_size_override("font_size", 15)
 		b.add_theme_color_override("font_pressed_color", UI.DIFF_COLORS[d])
 		b.pressed.connect(_set_diff.bind(d))
 		dh.add_child(b)
@@ -106,17 +113,29 @@ func _ready() -> void:
 	info_best = UI.label("", 22)
 	detail.add_child(info_best)
 
-	var ph := UI.hbox(12)
+	var ph := HFlowContainer.new()
+	ph.add_theme_constant_override("h_separation", 12)
+	ph.add_theme_constant_override("v_separation", 8)
 	detail.add_child(ph)
-	play_btn = UI.button("Play", _play, 260)
+	play_btn = UI.button("Play", _play, 200)
 	play_btn.add_theme_font_size_override("font_size", 30)
 	ph.add_child(play_btn)
 	ph.add_child(UI.button("Practice", _practice))
 	watch_btn = UI.button("Watch best run", _watch)
 	ph.add_child(watch_btn)
+	dual_btn = CheckButton.new()
+	dual_btn.text = "Two switches"
+	dual_btn.tooltip_text = "Two light switches: W / Up / left click = top,  S / Down / right click = bottom"
+	dual_btn.button_pressed = Settings.dual_switch
+	dual_btn.toggled.connect(func(b: bool):
+		Settings.dual_switch = b
+		Settings.save_settings()
+		_refresh_diffs())
+	ph.add_child(dual_btn)
 
 	# Practice options: speed, where to start, loop a section.
-	practice_box = UI.hbox(10)
+	practice_box = HFlowContainer.new()
+	practice_box.add_theme_constant_override("h_separation", 10)
 	detail.add_child(practice_box)
 	practice_box.add_child(UI.label("Practice:", 18, UI.MUTED))
 	speed_opt = OptionButton.new()
@@ -139,7 +158,9 @@ func _ready() -> void:
 		loop_opt.add_item(lp)
 	practice_box.add_child(loop_opt)
 
-	var tools := UI.hbox(10)
+	var tools := HFlowContainer.new()
+	tools.add_theme_constant_override("h_separation", 10)
+	tools.add_theme_constant_override("v_separation", 8)
 	detail.add_child(tools)
 	record_btn = UI.button("Record chart", _record)
 	var edit_chart_btn := UI.button("Edit chart", _edit_chart)
@@ -154,7 +175,9 @@ func _ready() -> void:
 		b.add_theme_font_size_override("font_size", 18)
 		tools.add_child(b)
 
-	detail.add_child(UI.label("Tap on the beat · long notes: hold until the end · SPACE / Z / X / click / gamepad · ESC pause", 18, UI.MUTED))
+	hint_label = UI.label("", 18, UI.MUTED)
+	hint_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	detail.add_child(hint_label)
 
 	_populate()
 
@@ -207,8 +230,18 @@ func _refresh_diffs() -> void:
 		var b: Button = diff_buttons[d]
 		var n := Library.chart_counts(s, d)
 		var tag := " ✎" if Library.has_custom_chart(s, d) else ""
-		b.text = "%s%s  Lv %d\n%d notes · %d holds" % [UI.DIFF_NAMES[d], tag, Library.chart_level(s, d), n.x, n.y]
+		b.text = "%s%s  Lv %d\n%d notes" % [UI.DIFF_NAMES[d], tag, Library.chart_level(s, d), n.x]
+		b.tooltip_text = "%d notes, %d of them hold notes" % [n.x, n.y]
 		b.button_pressed = d == Library.difficulty
+	if dual_btn:
+		dual_btn.visible = Library.difficulty in Settings.DUAL_DIFFS and not Settings.eye_mode and not Settings.any_key
+	if hint_label:
+		if Settings.dual_for(Library.difficulty):
+			hint_label.text = "Two switches: top = W / Up / left click,  bottom = S / Down / right click · hold notes: keep that switch down · ESC pause"
+		else:
+			hint_label.text = "Tap on the beat · long notes: hold until the end · SPACE / Z / X / click / gamepad · ESC pause"
+		if Library.difficulty == "twist":
+			hint_label.text += " · Chaos: watch out for Larry blocking the view!"
 	var best := Library.get_best(s.id, Library.difficulty)
 	if best.is_empty():
 		info_best.text = "Best: —"

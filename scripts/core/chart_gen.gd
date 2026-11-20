@@ -6,7 +6,7 @@ extends RefCounted
 ## (downbeat > beat 3 > other beats > 8ths > 16ths). Louder bars get more notes.
 
 const DIFFICULTIES := ["easy", "normal", "hard", "expert", "twist"]
-const EVENT_TYPES := ["text", "speed", "mirror", "fade"]
+const EVENT_TYPES := ["text", "speed", "mirror", "fade", "larry"]
 
 # step: which grid slots are allowed (4 = quarter notes, 2 = 8ths, 1 = 16ths)
 # gap:  minimum distance between notes in 16ths
@@ -49,6 +49,12 @@ const HOLDS := {
 
 ## Returns {"t": note times, "d": hold durations (0 = tap), "ev": events}.
 static func generate(song: Dictionary, diff: String, length: float) -> Dictionary:
+	var c := _generate(song, diff, length)
+	c["l"] = assign_lanes(song, c.t)
+	return c
+
+
+static func _generate(song: Dictionary, diff: String, length: float) -> Dictionary:
 	if diff == "twist":
 		return _twist(song, length)
 	var times := generate_taps(song, diff, length)
@@ -146,7 +152,8 @@ static func generate(song: Dictionary, diff: String, length: float) -> Dictionar
 	return {"t": out_t, "d": out_d, "ev": []}
 
 
-# Twist chart: the Normal chart plus a surprise every 8 bars, announced one bar ahead.
+# Chaos chart (id "twist"): the Hard chart plus a surprise every 8 bars, announced one bar ahead,
+# and "Larry interrupts" where Larry blocks the view and you play by ear.
 const TWISTS := [
 	["speed", 1.5, "SPEED UP!"], ["mirror", true, "MIRROR!"], ["speed", 1.0, "NORMAL SPEED"],
 	["fade", true, "FADE OUT! Feel the beat"], ["mirror", false, "FLIP BACK!"], ["fade", false, "LIGHTS ON"],
@@ -155,7 +162,7 @@ const TWISTS := [
 
 
 static func _twist(song: Dictionary, length: float) -> Dictionary:
-	var base := generate(song, "normal", length)
+	var base := _generate(song, "hard", length)
 	var beat := 60.0 / float(song.get("bpm", 120.0))
 	var bar := beat * 4.0
 	var offset := float(song.get("offset", 0.0))
@@ -177,6 +184,19 @@ static func _twist(song: Dictionary, length: float) -> Dictionary:
 		events.append({"t": snappedf(t, 0.001), "type": tw[0], "v": tw[1]})
 		k += 1
 		b += 8
+	# Larry interrupts: halfway between twists (every other gap), Larry jumps in front of the
+	# lane for 2 bars and you keep the beat by ear. Only steady on-beat notes in there.
+	var larry_windows: Array = []
+	b = 12
+	while offset + (b + LARRY_BARS) * bar < end_t - bar:
+		if b < energy.size() and float(energy[b]) < 0.3:
+			b += 1
+			continue
+		var t0 := offset + b * bar
+		events.append({"t": snappedf(t0, 0.001), "type": "larry", "v": LARRY_BARS})
+		larry_windows.append([t0 - beat * 0.5, t0 + LARRY_BARS * bar])
+		b += 16
+	events.sort_custom(func(x, y): return float(x.t) < float(y.t))
 	# leave room around each twist
 	var t_out := PackedFloat64Array()
 	var d_out := PackedFloat64Array()
@@ -185,13 +205,63 @@ static func _twist(song: Dictionary, length: float) -> Dictionary:
 	for i in src_t.size():
 		var clear := true
 		for ev in events:
-			if ev.type != "text" and src_t[i] > ev.t - beat * 0.5 and src_t[i] < ev.t + beat:
+			if ev.type != "text" and ev.type != "larry" and src_t[i] > ev.t - beat * 0.5 and src_t[i] < ev.t + beat:
 				clear = false
 				break
+		var dur := src_d[i]
+		for w in larry_windows:
+			if src_t[i] + dur > w[0] and src_t[i] < w[1]:
+				var g := roundi((src_t[i] - offset) / (beat / 4.0))
+				if posmod(g, 4) != 0:
+					clear = false        # by ear: quarter notes only
+				dur = 0.0                # and no holds you can't see
 		if clear:
 			t_out.append(src_t[i])
-			d_out.append(src_d[i])
+			d_out.append(dur)
 	return {"t": t_out, "d": d_out, "ev": events}
+
+
+const LARRY_BARS := 2
+
+
+## Two light switches: which switch (0 = top / up, 1 = bottom / down) each note goes to.
+## Kick-like hits (beats 1 and 3) go down, snare-like hits (2 and 4) go up, off-beats follow
+## the music (mid-range sounds up, low hits down) and fast 16th runs alternate like drumming.
+static func assign_lanes(song: Dictionary, t: PackedFloat64Array) -> PackedInt32Array:
+	var out := PackedInt32Array()
+	out.resize(t.size())
+	var beat := 60.0 / float(song.get("bpm", 120.0))
+	var offset := float(song.get("offset", 0.0))
+	var slot := beat / 4.0
+	var grid: Array = song.get("grid", [])
+	var mid: Array = song.get("mid", [])
+	var prev := 1
+	var run := 0
+	for i in t.size():
+		var g := roundi((t[i] - offset) / slot)
+		var s := posmod(g, 16)
+		var lane := 1
+		var gap := t[i] - t[i - 1] if i > 0 else 99.0
+		if i > 0 and gap <= slot * 1.05:
+			lane = 1 - prev
+		elif s % 8 == 0:
+			lane = 1
+		elif s % 8 == 4:
+			lane = 0
+		elif g >= 0 and g < grid.size() and g < mid.size():
+			lane = 0 if float(mid[g]) >= float(grid[g]) * 0.8 else 1
+		else:
+			lane = 1 - prev
+		if lane == prev and gap < beat * 1.01:
+			run += 1
+			if run >= 4:
+				lane = 1 - prev
+				run = 0
+		else:
+			run = 0
+		out[i] = lane
+		prev = lane
+	return out
 
 
 static func generate_taps(song: Dictionary, diff: String, length: float) -> PackedFloat64Array:
@@ -296,23 +366,35 @@ static func from_json(data) -> Dictionary:
 		arr = data
 	var t := PackedFloat64Array()
 	var d := PackedFloat64Array()
+	var l := PackedInt32Array()
+	var has_lanes := false
 	for e in arr:
 		if e is Array:
 			t.append(float(e[0]))
 			d.append(float(e[1]) if e.size() > 1 else 0.0)
+			l.append(int(e[2]) if e.size() > 2 else 0)
+			has_lanes = has_lanes or e.size() > 2
 		else:
 			t.append(float(e))
 			d.append(0.0)
+			l.append(0)
 	ev.sort_custom(func(a, b): return float(a.t) < float(b.t))
-	return {"t": t, "d": d, "ev": ev}
+	var c := {"t": t, "d": d, "ev": ev}
+	if has_lanes:
+		c["l"] = l      # charts without lanes get them assigned by Library.get_chart
+	return c
 
 
 static func to_json(chart: Dictionary) -> Dictionary:
 	var out := []
 	var t: PackedFloat64Array = chart.t
 	var d: PackedFloat64Array = chart.d
+	var l: PackedInt32Array = chart.get("l", PackedInt32Array())
+	var lanes := l.size() == t.size()
 	for i in t.size():
-		if d[i] > 0.0:
+		if lanes:
+			out.append([snappedf(t[i], 0.001), snappedf(d[i], 0.001), l[i]])
+		elif d[i] > 0.0:
 			out.append([snappedf(t[i], 0.001), snappedf(d[i], 0.001)])
 		else:
 			out.append(snappedf(t[i], 0.001))

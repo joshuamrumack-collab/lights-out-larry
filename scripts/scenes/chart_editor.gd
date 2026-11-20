@@ -10,7 +10,7 @@ extends Control
 
 var song: Dictionary
 var diff: String
-var notes: Array = []    # [time, duration]
+var notes: Array = []    # [time, duration, switch (0 = top, 1 = bottom)]
 var events: Array = []   # {"t", "type", "v"}
 var undo_stack: Array = []
 var dirty := false
@@ -72,8 +72,11 @@ func _load_chart(c: Dictionary) -> void:
 	notes.clear()
 	var t: PackedFloat64Array = c.t
 	var d: PackedFloat64Array = c.d
+	var l: PackedInt32Array = c.get("l", PackedInt32Array())
+	if l.size() != t.size():
+		l = ChartGen.assign_lanes(song, t)
 	for i in t.size():
-		notes.append([t[i], d[i]])
+		notes.append([t[i], d[i], l[i]])
 	events = c.get("ev", []).duplicate(true)
 
 
@@ -97,8 +100,8 @@ func _build_ui() -> void:
 	snap_opt.item_selected.connect(func(i): divs = [1, 2, 4, 0][i])
 	top.add_child(snap_opt)
 	var ev_opt := OptionButton.new()
-	ev_opt.add_item("+ Twist event")
-	for e in ["Text", "Speed", "Mirror", "Fade"]:
+	ev_opt.add_item("+ Chaos event")
+	for e in ["Text", "Speed", "Mirror", "Fade", "Larry interrupts"]:
 		ev_opt.add_item(e)
 	ev_opt.item_selected.connect(func(i):
 		if i > 0:
@@ -130,7 +133,7 @@ func _build_ui() -> void:
 
 	status = UI.label("", 16, UI.MUTED)
 	root.add_child(status)
-	root.add_child(UI.label("Click: add note · drag right: hold · drag note: move · Shift+drag: hold length · right click: delete · N while playing: tap in notes · Space: play · wheel: scroll · Ctrl+wheel: zoom · Ctrl+Z: undo · Ctrl+S: save", 15, Color(UI.MUTED, 0.7)))
+	root.add_child(UI.label("Click above/below the middle: top/bottom switch note · L: swap switch · drag right: hold · drag note: move · Shift+drag: hold length · right click: delete · N while playing: tap in notes · Space: play · wheel: scroll · Ctrl+wheel: zoom · Ctrl+Z: undo · Ctrl+S: save", 15, Color(UI.MUTED, 0.7)))
 	timeline.grab_focus.call_deferred()
 
 
@@ -240,7 +243,8 @@ func _timeline_input(event: InputEvent) -> void:
 				elif absf(mb.position.y - _lane_y()) < 60.0:
 					var t := _snap(_t_of(mb.position.x))
 					if t >= 0.0 and t <= length:
-						notes.append([t, 0.0])
+						# click above the middle of the lane = top switch, below = bottom switch
+						notes.append([t, 0.0, 0 if mb.position.y < _lane_y() else 1])
 						sel_note = notes.size() - 1
 						_sort_notes()
 						drag_mode = "new"
@@ -301,7 +305,7 @@ func _timeline_input(event: InputEvent) -> void:
 					if absf(float(n[0]) - t) < 0.02:
 						exists = true
 				if not exists:
-					notes.append([t, 0.0])
+					notes.append([t, 0.0, 0 if notes.is_empty() else 1 - int(notes[-1][2])])
 					_sort_notes()
 					_play_tick()
 			KEY_DELETE, KEY_BACKSPACE:
@@ -313,6 +317,10 @@ func _timeline_input(event: InputEvent) -> void:
 					_push_undo()
 					events.remove_at(sel_event)
 					sel_event = -1
+			KEY_L:
+				if sel_note >= 0:
+					_push_undo()
+					notes[sel_note][2] = 1 - int(notes[sel_note][2])
 			KEY_H:
 				if sel_note >= 0:
 					_push_undo()
@@ -379,6 +387,8 @@ func _add_event(type: String) -> void:
 			v = "Get ready!"
 		"speed":
 			v = 1.5
+		"larry":
+			v = 2
 	events.append({"t": _snap(cur), "type": type, "v": v})
 	events.sort_custom(func(a, b): return float(a.t) < float(b.t))
 	for i in events.size():
@@ -412,6 +422,15 @@ func _refresh_props() -> void:
 				sb.value_changed.connect(func(x): ev.v = x; dirty = true; timeline.queue_redraw())
 				props.add_child(UI.label("Note speed ×", 18))
 				props.add_child(sb)
+			"larry":
+				var lb := SpinBox.new()
+				lb.min_value = 1
+				lb.max_value = 4
+				lb.step = 1
+				lb.value = float(ev.v)
+				lb.value_changed.connect(func(x): ev.v = int(x); dirty = true; timeline.queue_redraw())
+				props.add_child(UI.label("Larry blocks the view for (bars)", 18))
+				props.add_child(lb)
 			"mirror", "fade":
 				var cb := CheckButton.new()
 				cb.text = ("Mirrored (ring on the right)" if ev.type == "mirror" else "Notes fade out near the ring")
@@ -430,6 +449,11 @@ func _refresh_props() -> void:
 		props.add_child(UI.button("Make tap" if float(n[1]) > 0.0 else "Make hold (H)", func():
 			_push_undo()
 			n[1] = 0.0 if float(n[1]) > 0.0 else beat
+			_refresh_props()
+			timeline.queue_redraw()))
+		props.add_child(UI.button("Move to %s switch (L)" % ("bottom" if int(n[2]) == 0 else "top"), func():
+			_push_undo()
+			n[2] = 1 - int(n[2])
 			_refresh_props()
 			timeline.queue_redraw()))
 	else:
@@ -454,12 +478,14 @@ func _chart() -> Dictionary:
 	_sort_notes()
 	var t := PackedFloat64Array()
 	var d := PackedFloat64Array()
+	var l := PackedInt32Array()
 	for n in notes:
 		t.append(float(n[0]))
 		d.append(float(n[1]))
+		l.append(int(n[2]) if n.size() > 2 else 0)
 	var ev := events.duplicate(true)
 	ev.sort_custom(func(a, b): return float(a.t) < float(b.t))
-	return {"t": t, "d": d, "ev": ev}
+	return {"t": t, "d": d, "l": l, "ev": ev}
 
 
 func _save() -> void:
@@ -557,7 +583,10 @@ func _draw_timeline() -> void:
 
 	# song bounds + lane
 	timeline.draw_rect(Rect2(_x_of(0.0), ly - 34, length * pps, 68), Color(th.lane, 0.9))
-	timeline.draw_string(font, Vector2(8, ly - 110 + 5), "twists", HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color(UI.MUTED, 0.6))
+	timeline.draw_line(Vector2(_x_of(0.0), ly), Vector2(_x_of(length), ly), Color(1, 1, 1, 0.08), 1.0)
+	timeline.draw_string(font, Vector2(8, ly - 38), "top switch", HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color(UI.MUTED, 0.6))
+	timeline.draw_string(font, Vector2(8, ly + 48), "bottom switch", HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color(UI.MUTED, 0.6))
+	timeline.draw_string(font, Vector2(8, ly - 110 + 5), "chaos events", HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color(UI.MUTED, 0.6))
 	timeline.draw_line(Vector2(0, ly - 110), Vector2(sz.x, ly - 110), Color(1, 1, 1, 0.06), 1.0)
 
 	# notes
@@ -570,13 +599,14 @@ func _draw_timeline() -> void:
 		var b := (t - offset) / beat
 		var subp := posmod(roundi(b * 4.0), 4)
 		var col: Color = th.a if subp == 0 else (th.b if subp == 2 else th.c)
+		var ny := ly + (-15.0 if int(notes[i][2]) == 0 else 15.0)   # top / bottom switch
 		if d > 0.0:
-			timeline.draw_rect(Rect2(x, ly - 14, d * pps, 28), Color(col, 0.55))
-			timeline.draw_circle(Vector2(x + d * pps, ly), 12.0, Color(col, 0.7))
-		Cosmetics.draw_shape(timeline, Progress.shape_id, Vector2(x, ly), 22.0, col)
-		Cosmetics.draw_shape(timeline, Progress.shape_id, Vector2(x, ly), 9.0, Color(1, 1, 1, 0.85))
+			timeline.draw_rect(Rect2(x, ny - 9, d * pps, 18), Color(col, 0.55))
+			timeline.draw_circle(Vector2(x + d * pps, ny), 9.0, Color(col, 0.7))
+		Cosmetics.draw_shape(timeline, Progress.shape_id, Vector2(x, ny), 16.0, col)
+		Cosmetics.draw_shape(timeline, Progress.shape_id, Vector2(x, ny), 6.0, Color(1, 1, 1, 0.85))
 		if i == sel_note:
-			timeline.draw_arc(Vector2(x, ly), 30.0, 0, TAU, 32, Color.WHITE, 3.0, true)
+			timeline.draw_arc(Vector2(x, ny), 22.0, 0, TAU, 32, Color.WHITE, 3.0, true)
 
 	# events
 	for i in events.size():
@@ -585,7 +615,10 @@ func _draw_timeline() -> void:
 		if x < -200 or x > sz.x + 20:
 			continue
 		var y := ly - 110.0
-		var col: Color = {"text": UI.TEXT, "speed": UI.ACCENT3, "mirror": UI.ACCENT2, "fade": UI.ACCENT}.get(str(ev.type), UI.TEXT)
+		var col: Color = {"text": UI.TEXT, "speed": UI.ACCENT3, "mirror": UI.ACCENT2, "fade": UI.ACCENT, "larry": UI.BAD}.get(str(ev.type), UI.TEXT)
+		if str(ev.type) == "larry":
+			# show how long Larry blocks the view
+			timeline.draw_rect(Rect2(x, ly - 34, float(ev.v) * 4.0 * beat * pps, 68), Color(UI.BAD, 0.12))
 		timeline.draw_line(Vector2(x, y), Vector2(x, ly + 34), Color(col, 0.35), 2.0)
 		timeline.draw_colored_polygon(PackedVector2Array([Vector2(x - 9, y - 9), Vector2(x + 9, y - 9), Vector2(x + 9, y + 9), Vector2(x - 9, y + 9)]), col if i != sel_event else Color.WHITE)
 		var label := ""
@@ -598,6 +631,8 @@ func _draw_timeline() -> void:
 				label = "mirror on" if bool(ev.v) else "mirror off"
 			"fade":
 				label = "fade on" if bool(ev.v) else "fade off"
+			"larry":
+				label = "Larry interrupts (%d bars)" % int(ev.v)
 		timeline.draw_string(font, Vector2(x + 13, y - 14), label, HORIZONTAL_ALIGNMENT_LEFT, 260, 15, col)
 
 	# playhead

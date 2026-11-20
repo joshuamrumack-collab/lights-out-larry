@@ -12,6 +12,7 @@ var background: String = "room"   # "room" (little brother + light switch) or "p
 var room_theme: String = "auto"   # "auto" (each song gets a room) or one of PixelRoom.THEMES
 var scroll_speed: float = 1.0
 var no_fail: bool = false
+var dual_switch: bool = false   # two light switches (two lanes) on Hard, Expert and Chaos
 var fullscreen: bool = false     # kept for old settings files; see window_mode
 var window_mode: String = "windowed"   # windowed / fullscreen / borderless
 var window_size: Vector2i = Vector2i(1280, 720)
@@ -61,6 +62,23 @@ func _setup_input() -> void:
 		var j := InputEventJoypadButton.new()
 		j.button_index = b
 		InputMap.action_add_event("hit", j)
+
+	# Two light switches: top (up) and bottom (down).
+	_add_action("hit_up")
+	_add_action("hit_down")
+	for pair in [["hit_up", [KEY_W, KEY_UP, KEY_F, KEY_Z], MOUSE_BUTTON_LEFT, [JOY_BUTTON_Y, JOY_BUTTON_LEFT_SHOULDER, JOY_BUTTON_DPAD_UP]],
+			["hit_down", [KEY_S, KEY_DOWN, KEY_J, KEY_X], MOUSE_BUTTON_RIGHT, [JOY_BUTTON_A, JOY_BUTTON_RIGHT_SHOULDER, JOY_BUTTON_DPAD_DOWN]]]:
+		for k in pair[1]:
+			var ke := InputEventKey.new()
+			ke.physical_keycode = k
+			InputMap.action_add_event(pair[0], ke)
+		var mb := InputEventMouseButton.new()
+		mb.button_index = pair[2]
+		InputMap.action_add_event(pair[0], mb)
+		for b in pair[3]:
+			var jb := InputEventJoypadButton.new()
+			jb.button_index = b
+			InputMap.action_add_event(pair[0], jb)
 
 	_add_action("pause")
 	var esc := InputEventKey.new()
@@ -135,6 +153,7 @@ func load_settings() -> void:
 	offset_ms = cfg.get_value("game", "offset_ms", offset_ms)
 	scroll_speed = cfg.get_value("game", "scroll_speed", scroll_speed)
 	no_fail = cfg.get_value("game", "no_fail", no_fail)
+	dual_switch = cfg.get_value("game", "dual_switch", dual_switch)
 	music_volume = cfg.get_value("audio", "music_volume", music_volume)
 	sfx_volume = cfg.get_value("audio", "sfx_volume", sfx_volume)
 	hit_sound = cfg.get_value("audio", "hit_sound", hit_sound)
@@ -168,6 +187,7 @@ func save_settings() -> void:
 	cfg.set_value("game", "offset_ms", offset_ms)
 	cfg.set_value("game", "scroll_speed", scroll_speed)
 	cfg.set_value("game", "no_fail", no_fail)
+	cfg.set_value("game", "dual_switch", dual_switch)
 	cfg.set_value("audio", "music_volume", music_volume)
 	cfg.set_value("audio", "sfx_volume", sfx_volume)
 	cfg.set_value("audio", "hit_sound", hit_sound)
@@ -221,3 +241,11 @@ func _copy_dir(from: String, to: String) -> void:
 	for file in d.get_files():
 		if not FileAccess.file_exists(to.path_join(file)):
 			DirAccess.copy_absolute(from.path_join(file), to.path_join(file))
+
+
+const DUAL_DIFFS := ["hard", "expert", "twist"]
+
+
+## Is the two-switch mode on for this difficulty? (Not with eye tracker mode or "any key".)
+func dual_for(diff: String) -> bool:
+	return dual_switch and diff in DUAL_DIFFS and not eye_mode and not any_key

@@ -22,6 +22,10 @@ need you to keep the button down. Pressing when there's no note breaks your comb
 - **Change difficulty:** Left and Right in song select
 
 ## Features
+- **Chaos difficulty** (was Twist): speed changes, mirror and fades, plus *Larry interrupts* where
+  Larry jumps in front of the lane for two bars and you keep the beat by ear
+- **Two light switches** (optional on Hard, Expert and Chaos): notes come on two paths.
+  Top: W / Up / left click. Bottom: S / Down / right click. On touch screens: top or bottom half
 - 30 songs included, each with five difficulties: Easy, Normal, Hard, Expert and Twist
   (Twist adds speed changes, mirroring and fades)
 - Import your own Suno songs: choose the audio file and the game finds the beat and makes
@@ -34,6 +38,18 @@ need you to keep the button down. Pressing when there's no note breaks your comb
   **eye tracker mode** where fewer notes come and they wait at the ring
 - Four rooms (gamer, teen, cozy, spooky) and a main menu where Larry runs around the
   house flicking lights while the family chases him
+
+## Auto-beatmap draft tool
+`tools/auto_chart.py` listens to a song with librosa, finds the beats and the hits, and writes a
+draft chart for every difficulty (with switch lanes, holds and Chaos events) into the song's
+`song.json`. Then open the song in the game, press **Edit chart**, and tune the drafts by hand.
+
+```
+pip install -r tools/requirements.txt
+python tools/auto_chart.py songs/<song-folder> --preview
+```
+On Windows you can also drag a song folder onto `tools/auto_chart.bat`. `--preview` writes
+`preview_<difficulty>.wav` files: the song with a click on every note (high click = top switch).
 
 ## Running it
 Open the folder in Godot 4.7 and press Play. The main scene is `scenes/main_menu.tscn`.
